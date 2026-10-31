@@ -264,6 +264,10 @@ def verify(req: VerifyRequest):
                     "sources": [],
                 }
             )
+             if results:
+        save_check(text, results)
+
+    return {"results": results}
 @app.post("/translate")
 def translate(req: TranslateRequest):
     if not GROQ_API_KEY:
@@ -287,7 +291,4 @@ STRINGS:
         raise HTTPException(status_code=502, detail="Translation mismatch, try again.")
     return {"translations": [str(x) for x in out]}
 
-    if results:
-        save_check(text, results)
-
-    return {"results": results}
+   
