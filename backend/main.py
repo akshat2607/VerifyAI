@@ -8,9 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tavily import TavilyClient
 
-# If you get a "model not found" or "quota" error, change this one line
-# to another Groq model name, e.g. "llama-3.1-8b-instant".
-MODEL = "llama-3.1-8b-instant"
+# Models to try, strongest first. Any model your Groq account cannot use is skipped.
+MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
+    "llama-3.1-8b-instant",
+]
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
@@ -109,22 +114,27 @@ def load_history():
 
 # ---------- Helper: ask Gemini and get JSON back ----------
 def ask_json(client, prompt):
-    r = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        },
-        timeout=60,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Groq said {r.status_code}: {r.text[:300]}")
-    text = r.json()["choices"][0]["message"]["content"].strip()
-    text = text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
+    last_error = ""
+    for model in MODELS:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+            },
+            timeout=60,
+        )
+        if r.status_code == 200:
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            text = text.replace("```json", "").replace("```", "").strip()
+            return json.loads(text)
+        last_error = f"{model} -> {r.status_code}: {r.text[:200]}"
+        if r.status_code not in (400, 404):
+            break
+    raise RuntimeError(f"No Groq model worked. Last error: {last_error}")
 
 
 # ---------- Step 1: find the checkable claims ----------
