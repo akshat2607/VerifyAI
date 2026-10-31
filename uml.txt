@@ -1,0 +1,4 @@
+Browser → Streamlit (frontend/app.py) → FastAPI on Render (backend/main.py)
+                                          ├ POST /verify    → Groq + Tavily + Supabase
+                                          ├ GET  /history   → Supabase
+                                          └ POST /translate → Groq
