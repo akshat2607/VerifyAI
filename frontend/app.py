@@ -1,5 +1,6 @@
 import html
 import os
+import uuid
 from collections import Counter
 from urllib.parse import urlparse
 
@@ -58,6 +59,11 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
+# A random ID for this visitor's session. It is sent to the backend so each
+# visitor only sees and clears their own checks.
+if "client_id" not in st.session_state:
+    st.session_state.client_id = str(uuid.uuid4())
+
 
 def esc(x):
     return html.escape(str(x))
@@ -92,10 +98,19 @@ def clear_history():
     backend = st.session_state.backend_url
     if backend:
         try:
-            r = requests.delete(f"{backend}/history", timeout=60)
+            r = requests.delete(
+                f"{backend}/history",
+                params={"client_id": st.session_state.client_id},
+                timeout=60,
+            )
             if r.status_code not in (200, 204):
-                detail = r.text[:200] or "no details"
-                st.session_state.history_error = f"Backend did not clear history ({r.status_code}): {detail}"
+                try:
+                    detail = r.json().get("detail", r.text)
+                except Exception:
+                    detail = r.text
+                st.session_state.history_error = (
+                    f"Backend did not clear history ({r.status_code}): {str(detail)[:200] or 'no details'}"
+                )
         except Exception as e:
             st.session_state.history_error = f"Could not clear backend history: {e}"
 
@@ -162,7 +177,11 @@ with st.sidebar:
         col_show, col_clear = st.columns(2)
         if col_show.button("🕘 Show", use_container_width=True):
             try:
-                data = requests.get(f"{BACKEND_URL}/history", timeout=60).json()
+                data = requests.get(
+                    f"{BACKEND_URL}/history",
+                    params={"client_id": st.session_state.client_id},
+                    timeout=60,
+                ).json()
                 st.session_state.history = data.get("history", [])
                 st.session_state.history_error = None
             except Exception as e:
@@ -173,9 +192,9 @@ with st.sidebar:
             on_click=clear_history,
             use_container_width=True,
             disabled=not st.session_state.confirm_clear,
-            help="Delete all saved past checks",
+            help="Delete all your saved past checks",
         )
-        st.checkbox("Yes, permanently delete all past checks", key="confirm_clear")
+        st.checkbox("Yes, permanently delete all my past checks", key="confirm_clear")
 
     if st.session_state.history_error:
         st.error(st.session_state.history_error)
@@ -231,7 +250,11 @@ if verify_clicked:
     try:
         with st.status("Checking claims… the first request can take up to a minute while the server wakes up.", expanded=True) as status:
             st.write("🧠 Extracting claims, 🌐 searching the web, ⚖️ judging the evidence…")
-            response = requests.post(f"{BACKEND_URL}/verify", json={"text": user_text}, timeout=180)
+            response = requests.post(
+                f"{BACKEND_URL}/verify",
+                json={"text": user_text, "client_id": st.session_state.client_id},
+                timeout=180,
+            )
             try:
                 body = response.json()
             except Exception:
