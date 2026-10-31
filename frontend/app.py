@@ -41,10 +41,10 @@ EXAMPLES = [
     "The Great Wall of China is visible from space with the naked eye.",
     "Mount Everest is the tallest mountain on Earth, and it is in India.",
 ]
-LANGS = ["English", "Hindi", "Punjabi", "Spanish", "French", "German", "Arabic", "Chinese", "Japanese"]
+LANGS = ["Original", "English", "Hindi", "Punjabi", "Spanish", "French", "German", "Arabic", "Chinese", "Japanese"]
 MAX_CHARS = 3000
 
-for key, default in [("user_text", ""), ("results", None), ("history", None), ("translated", None)]:
+for key, default in [("user_text", ""), ("results", None), ("history", None), ("translated", None), ("lang", "Original"), ("tr_error", None), ("backend_url", "")]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -70,6 +70,39 @@ def clear_all():
     st.session_state.user_text = ""
     st.session_state.results = None
     st.session_state.translated = None
+    st.session_state.lang = "Original"
+    st.session_state.tr_error = None
+
+
+def do_translate():
+    """Runs when the language dropdown changes."""
+    lang = st.session_state.lang
+    results = st.session_state.results
+    st.session_state.tr_error = None
+    if lang == "Original" or not results:
+        st.session_state.translated = None
+        return
+    texts = [r.get("claim", "") for r in results] + [r.get("explanation", "") for r in results]
+    try:
+        tr = requests.post(
+            f"{st.session_state.backend_url}/translate",
+            json={"texts": texts, "language": lang},
+            timeout=120,
+        )
+        if tr.status_code == 200:
+            out = tr.json()["translations"]
+            k = len(results)
+            st.session_state.translated = {"lang": lang, "claims": out[:k], "expl": out[k:]}
+        else:
+            st.session_state.translated = None
+            try:
+                detail = tr.json().get("detail", tr.text)
+            except Exception:
+                detail = tr.text
+            st.session_state.tr_error = f"Translation failed ({tr.status_code}): {detail}"
+    except Exception as e:
+        st.session_state.translated = None
+        st.session_state.tr_error = f"Translation failed: {e}"
 
 
 def safe_conf(v):
@@ -113,6 +146,8 @@ with st.sidebar:
                 f"{esc(row.get('text','')[:90])}<br>{v}</div>",
                 unsafe_allow_html=True,
             )
+
+st.session_state.backend_url = BACKEND_URL
 
 # ---------- Hero ----------
 st.markdown(
@@ -162,6 +197,8 @@ if verify_clicked:
                 st.stop()
             st.session_state.results = response.json().get("results", [])
             st.session_state.translated = None
+            st.session_state.lang = "Original"
+            st.session_state.tr_error = None
             status.update(label="Done!", state="complete", expanded=False)
     except Exception as e:
         st.error(f"Could not reach the backend: {e}")
@@ -181,23 +218,9 @@ if results is not None:
         )
         st.markdown(pills, unsafe_allow_html=True)
 
-        c1, c2, c3 = st.columns([3, 2, 2])
-        lang = c1.selectbox("Translate to", LANGS, label_visibility="collapsed")
-        if c2.button("🌐 Translate", use_container_width=True):
-            texts = [r.get("claim", "") for r in results] + [r.get("explanation", "") for r in results]
-            try:
-                with st.spinner("Translating…"):
-                    tr = requests.post(f"{BACKEND_URL}/translate", json={"texts": texts, "language": lang}, timeout=120)
-                if tr.status_code == 200:
-                    out = tr.json()["translations"]
-                    k = len(results)
-                    st.session_state.translated = {"lang": lang, "claims": out[:k], "expl": out[k:]}
-                else:
-                    st.error(f"Translation failed: {tr.json().get('detail', tr.text)}")
-            except Exception as e:
-                st.error(f"Translation failed: {e}")
-        if c3.button("↩️ Original", use_container_width=True):
-            st.session_state.translated = None
+        st.selectbox("🌐 Translate results to", LANGS, key="lang", on_change=do_translate)
+        if st.session_state.tr_error:
+            st.error(st.session_state.tr_error)
         tdata = st.session_state.translated
         if tdata:
             st.caption(f"Showing translation in {tdata['lang']}")
