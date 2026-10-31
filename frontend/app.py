@@ -44,7 +44,17 @@ EXAMPLES = [
 LANGS = ["Original", "English", "Hindi", "Punjabi", "Spanish", "French", "German", "Arabic", "Chinese", "Japanese"]
 MAX_CHARS = 3000
 
-for key, default in [("user_text", ""), ("results", None), ("history", None), ("translated", None), ("lang", "Original"), ("tr_error", None), ("backend_url", "")]:
+for key, default in [
+    ("user_text", ""),
+    ("results", None),
+    ("history", None),
+    ("history_error", None),
+    ("confirm_clear", False),
+    ("translated", None),
+    ("lang", "Original"),
+    ("tr_error", None),
+    ("backend_url", ""),
+]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -72,6 +82,22 @@ def clear_all():
     st.session_state.translated = None
     st.session_state.lang = "Original"
     st.session_state.tr_error = None
+
+
+def clear_history():
+    """Clears the history shown in the sidebar and asks the backend to delete it."""
+    st.session_state.history = []
+    st.session_state.history_error = None
+    st.session_state.confirm_clear = False  # require confirmation again next time
+    backend = st.session_state.backend_url
+    if backend:
+        try:
+            r = requests.delete(f"{backend}/history", timeout=60)
+            if r.status_code not in (200, 204):
+                detail = r.text[:200] or "no details"
+                st.session_state.history_error = f"Backend did not clear history ({r.status_code}): {detail}"
+        except Exception as e:
+            st.session_state.history_error = f"Could not clear backend history: {e}"
 
 
 def do_translate():
@@ -129,12 +155,30 @@ with st.sidebar:
         )
     st.info("It can make mistakes. Always check the sources.")
 
-    if BACKEND_URL and st.button("🕘 Show recent checks", use_container_width=True):
-        try:
-            data = requests.get(f"{BACKEND_URL}/history", timeout=60).json()
-            st.session_state.history = data.get("history", [])
-        except Exception as e:
-            st.error(f"Could not load history: {e}")
+    # Keep the URL in session state before any callbacks run
+    st.session_state.backend_url = BACKEND_URL
+
+    if BACKEND_URL:
+        col_show, col_clear = st.columns(2)
+        if col_show.button("🕘 Show", use_container_width=True):
+            try:
+                data = requests.get(f"{BACKEND_URL}/history", timeout=60).json()
+                st.session_state.history = data.get("history", [])
+                st.session_state.history_error = None
+            except Exception as e:
+                st.error(f"Could not load history: {e}")
+
+        col_clear.button(
+            "🗑️ Clear",
+            on_click=clear_history,
+            use_container_width=True,
+            disabled=not st.session_state.confirm_clear,
+            help="Delete all saved past checks",
+        )
+        st.checkbox("Yes, permanently delete all past checks", key="confirm_clear")
+
+    if st.session_state.history_error:
+        st.error(st.session_state.history_error)
 
     if st.session_state.history is not None:
         if not st.session_state.history:
@@ -146,8 +190,6 @@ with st.sidebar:
                 f"{esc(row.get('text','')[:90])}<br>{v}</div>",
                 unsafe_allow_html=True,
             )
-
-st.session_state.backend_url = BACKEND_URL
 
 # ---------- Hero ----------
 st.markdown(
