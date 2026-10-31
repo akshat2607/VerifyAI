@@ -5,16 +5,14 @@ from datetime import datetime, timezone
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from google import genai
-from google.genai import types
 from pydantic import BaseModel
 from tavily import TavilyClient
 
 # If you get a "model not found" or "quota" error, change this one line
-# to another Gemini model name, e.g. "gemini-2.5-flash-lite".
-MODEL = "gemini-3.8-flash"
+# to another Groq model name, e.g. "llama-3.1-8b-instant".
+MODEL = "llama-3.3-70b-versatile"
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
@@ -111,15 +109,19 @@ def load_history():
 
 # ---------- Helper: ask Gemini and get JSON back ----------
 def ask_json(client, prompt):
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
-        ),
+    r = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+        },
+        timeout=60,
     )
-    text = response.text.strip()
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"]["content"].strip()
     text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
@@ -131,16 +133,16 @@ You are a fact-checking assistant.
 From the TEXT below, extract up to 4 specific, checkable factual claims.
 Ignore opinions, jokes and questions.
 
-Return ONLY a JSON list. Each item must look like:
+Return ONLY a JSON object with one key "claims" holding a list. Each item must look like:
 {{"claim": "<the claim, in the same language as the text>",
   "search_query": "<a short English web search query to check it>"}}
 
-If there are no checkable claims, return [].
+If there are none, use an empty list.
 
 TEXT:
 {text}
 """
-    return ask_json(client, prompt)
+    return ask_json(client, prompt).get("claims", [])
 
 
 # ---------- Step 2: search the web ----------
@@ -204,11 +206,11 @@ def verify(req: VerifyRequest):
         raise HTTPException(status_code=400, detail="Text is empty.")
     if len(text) > 3000:
         raise HTTPException(status_code=400, detail="Text is too long (max 3000 characters).")
-    if not GEMINI_API_KEY or not TAVILY_API_KEY:
+    if not GROQ_API_KEY or not TAVILY_API_KEY:
         raise HTTPException(status_code=500, detail="Server is missing API keys.")
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = None
         tavily = TavilyClient(api_key=TAVILY_API_KEY)
         claims = extract_claims(client, text)
     except Exception as e:
@@ -253,3 +255,4 @@ def verify(req: VerifyRequest):
         save_check(text, results)
 
     return {"results": results}
+
