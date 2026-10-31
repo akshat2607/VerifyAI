@@ -12,7 +12,7 @@ from tavily import TavilyClient
 
 # If you get a "model not found" or "quota" error, change this one line
 # to another Gemini model name, e.g. "gemini-2.5-flash-lite".
-MODEL = "gemini-3.8-flash-lite"
+MODEL = "gemini-3.8-flash"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
