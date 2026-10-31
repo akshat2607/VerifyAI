@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -18,12 +19,21 @@ MODELS = [
     "llama-3.1-8b-instant",
 ]
 
+# Sites where anyone can post anything. Results from these are never used as evidence.
+BLOCKED_DOMAINS = [
+    "facebook.com", "instagram.com", "threads.net", "x.com", "twitter.com",
+    "tiktok.com", "youtube.com", "youtu.be", "reddit.com", "quora.com",
+    "pinterest.com", "tumblr.com", "linkedin.com", "telegram.org", "t.me",
+    "whatsapp.com", "snapchat.com", "discord.com", "mastodon.social",
+    "bsky.app", "medium.com", "weibo.com", "vk.com",
+]
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")  # use the service_role / secret key
 
-app = FastAPI(title="VerifyAI Backend", version="2.2")
+app = FastAPI(title="VerifyAI Backend", version="2.3")
 
 # Lets a website or app from any address call this backend.
 app.add_middleware(
@@ -55,6 +65,12 @@ def valid_client_id(value):
         return str(uuid.UUID(str(value)))
     except Exception:
         return None
+
+
+def is_blocked(url):
+    """True if the URL belongs to a blocked site or any of its subdomains."""
+    host = urlparse(url).netloc.lower().split(":")[0]
+    return any(host == d or host.endswith("." + d) for d in BLOCKED_DOMAINS)
 
 
 # ---------- Database (Supabase) ----------
@@ -208,10 +224,15 @@ TEXT:
     return ask_json(client, prompt).get("claims", [])
 
 
-# ---------- Step 2: search the web ----------
+# ---------- Step 2: search the web (social media excluded) ----------
 def search_web(tavily, query):
-    result = tavily.search(query=query, max_results=5)
-    return result.get("results", [])
+    result = tavily.search(
+        query=query,
+        max_results=10,  # ask for extra, because some will be filtered out
+        exclude_domains=BLOCKED_DOMAINS,
+    )
+    kept = [s for s in result.get("results", []) if not is_blocked(s.get("url", ""))]
+    return kept[:5]
 
 
 # ---------- Step 3: judge the claim using ONLY the evidence ----------
