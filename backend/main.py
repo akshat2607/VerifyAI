@@ -264,7 +264,7 @@ def verify(req: VerifyRequest):
                     "sources": [],
                 }
             )
-            @app.post("/translate")
+@app.post("/translate")
 def translate(req: TranslateRequest):
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="Server is missing API keys.")
