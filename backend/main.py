@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 
 import requests
@@ -20,9 +21,9 @@ MODELS = [
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")  # use the service_role / secret key
 
-app = FastAPI(title="VerifyAI Backend", version="2.0")
+app = FastAPI(title="VerifyAI Backend", version="2.2")
 
 # Lets a website or app from any address call this backend.
 app.add_middleware(
@@ -32,15 +33,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Backup memory, used only if the database is not set up or is unreachable.
-memory_history = []
+# Backup memory per visitor (client_id -> list of checks), used only if the
+# database is not set up or is unreachable.
+memory_history = {}
+MAX_MEMORY_VISITORS = 500
 
 
 class VerifyRequest(BaseModel):
     text: str
+    client_id: str = ""
+
+
 class TranslateRequest(BaseModel):
     texts: list[str]
     language: str
+
+
+def valid_client_id(value):
+    """Returns a normalised UUID string, or None if the value is not a valid UUID."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except Exception:
+        return None
 
 
 # ---------- Database (Supabase) ----------
@@ -56,10 +70,11 @@ def db_headers():
     return headers
 
 
-def save_check(text, results):
-    """Save one check. Returns True if saved in the database."""
+def save_check(client_id, text, results):
+    """Save one check for one visitor. Returns True if saved in the database."""
     verdicts = [r["verdict"] for r in results]
-    memory_history.insert(
+    visitor = memory_history.setdefault(client_id, [])
+    visitor.insert(
         0,
         {
             "time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -67,7 +82,9 @@ def save_check(text, results):
             "verdicts": verdicts,
         },
     )
-    del memory_history[20:]
+    del visitor[20:]
+    while len(memory_history) > MAX_MEMORY_VISITORS:
+        memory_history.pop(next(iter(memory_history)))
 
     if not db_enabled():
         return False
@@ -77,7 +94,7 @@ def save_check(text, results):
         r = requests.post(
             f"{SUPABASE_URL}/rest/v1/checks",
             headers=headers,
-            json={"input_text": text, "results": results},
+            json={"client_id": client_id, "input_text": text, "results": results},
             timeout=15,
         )
         return r.status_code in (200, 201, 204)
@@ -85,8 +102,8 @@ def save_check(text, results):
         return False
 
 
-def load_history():
-    """Returns (list_of_checks, where_it_came_from)."""
+def load_history(client_id):
+    """Returns (list_of_checks, where_it_came_from) for one visitor."""
     if db_enabled():
         try:
             r = requests.get(
@@ -94,6 +111,7 @@ def load_history():
                 headers=db_headers(),
                 params={
                     "select": "created_at,input_text,results",
+                    "client_id": f"eq.{client_id}",
                     "order": "created_at.desc",
                     "limit": "20",
                 },
@@ -112,10 +130,41 @@ def load_history():
                 return rows, "database"
         except Exception:
             pass
-    return memory_history, "memory"
+    return memory_history.get(client_id, []), "memory"
 
 
-# ---------- Helper: ask Gemini and get JSON back ----------
+def clear_db_history(client_id):
+    """Deletes every saved check that belongs to this visitor. Returns (ok, error_message)."""
+    try:
+        del_headers = db_headers()
+        del_headers["Prefer"] = "return=minimal"
+        d = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/checks",
+            headers=del_headers,
+            params={"client_id": f"eq.{client_id}"},
+            timeout=15,
+        )
+        if d.status_code not in (200, 204):
+            return False, f"Database returned {d.status_code}: {d.text[:200]}"
+
+        # RLS can make a DELETE succeed while removing nothing, so check.
+        check = requests.get(
+            f"{SUPABASE_URL}/rest/v1/checks",
+            headers=db_headers(),
+            params={"select": "created_at", "client_id": f"eq.{client_id}", "limit": "1"},
+            timeout=15,
+        )
+        if check.status_code == 200 and check.json():
+            return False, (
+                "Delete ran but rows are still there. Row Level Security is probably "
+                "blocking it: use the service_role key as SUPABASE_KEY."
+            )
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+# ---------- Helper: ask the AI model and get JSON back ----------
 def ask_json(client, prompt):
     last_error = ""
     for model in MODELS:
@@ -208,9 +257,29 @@ def health():
 
 
 @app.get("/history")
-def get_history():
-    rows, source = load_history()
+def get_history(client_id: str = ""):
+    cid = valid_client_id(client_id)
+    if not cid:
+        return {"history": [], "stored_in": "none"}
+    rows, source = load_history(cid)
     return {"history": rows, "stored_in": source}
+
+
+@app.delete("/history")
+def delete_history(client_id: str = ""):
+    cid = valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="Missing or invalid client_id.")
+
+    memory_history.pop(cid, None)
+
+    if db_enabled():
+        ok, err = clear_db_history(cid)
+        if not ok:
+            raise HTTPException(status_code=502, detail=f"Could not clear database history: {err}")
+        return {"status": "cleared", "cleared": ["memory", "database"]}
+
+    return {"status": "cleared", "cleared": ["memory"]}
 
 
 @app.post("/verify")
@@ -265,8 +334,9 @@ def verify(req: VerifyRequest):
                 }
             )
 
-    if results:
-        save_check(text, results)
+    cid = valid_client_id(req.client_id)
+    if results and cid:
+        save_check(cid, text, results)
 
     return {"results": results}
 
