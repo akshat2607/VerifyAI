@@ -190,12 +190,16 @@ if verify_clicked:
         with st.status("Checking claims… the first request can take up to a minute while the server wakes up.", expanded=True) as status:
             st.write("🧠 Extracting claims, 🌐 searching the web, ⚖️ judging the evidence…")
             response = requests.post(f"{BACKEND_URL}/verify", json={"text": user_text}, timeout=180)
-            if response.status_code != 200:
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            if response.status_code != 200 or not isinstance(body, dict):
                 status.update(label="Something went wrong", state="error")
-                detail = response.json().get("detail", response.text)
-                st.error(f"Backend error: {detail}")
+                detail = body.get("detail") if isinstance(body, dict) else None
+                st.error(f"Backend error ({response.status_code}): {detail or response.text[:300] or 'empty response'}")
                 st.stop()
-            st.session_state.results = response.json().get("results", [])
+            st.session_state.results = body.get("results") or []
             st.session_state.translated = None
             st.session_state.lang = "Original"
             st.session_state.tr_error = None
