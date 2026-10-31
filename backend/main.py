@@ -10,7 +10,7 @@ from tavily import TavilyClient
 
 # If you get a "model not found" or "quota" error, change this one line
 # to another Groq model name, e.g. "llama-3.1-8b-instant".
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "llama-3.1-8b-instant"
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
