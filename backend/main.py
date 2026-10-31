@@ -120,7 +120,8 @@ def ask_json(client, prompt):
         },
         timeout=60,
     )
-    r.raise_for_status()
+    if r.status_code != 200:
+        raise RuntimeError(f"Groq said {r.status_code}: {r.text[:300]}")
     text = r.json()["choices"][0]["message"]["content"].strip()
     text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)
@@ -255,4 +256,3 @@ def verify(req: VerifyRequest):
         save_check(text, results)
 
     return {"results": results}
-
